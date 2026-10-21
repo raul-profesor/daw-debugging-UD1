@@ -1,0 +1,72 @@
+---
+- name: Esperar a que la instancia esté accesible
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Esperar conexión SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+- name: Desplegar escenario multitenant con nginx
+  hosts: all
+  become: true
+  vars:
+    repo_version: main
+    sites:
+      - name: planes.daw
+        repo_url: https://github.com/raul-profesor/rundash.git
+        deploy_dir: /var/www/planes
+      - name: puertos.daw
+        repo_url: https://github.com/raul-profesor/puertos-tour.git
+        deploy_dir: /var/www/puertos
+  tasks:
+    - name: Esperar a que cloud-init termine
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Esperar a que apt quede libre
+      ansible.builtin.shell: |
+        timeout 120 bash -c 'while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+          || fuser /var/lib/dpkg/lock >/dev/null 2>&1 \
+          || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; done'
+      changed_when: false
+
+    - name: Instalar nginx y git
+      ansible.builtin.apt:
+        name:
+          - nginx
+          - git
+        state: present
+        update_cache: true
+        lock_timeout: 120
+
+    - name: Clonar cada aplicación desde GitHub
+      ansible.builtin.git:
+        repo: "{{ item.repo_url }}"
+        dest: "{{ item.deploy_dir }}"
+        version: "{{ repo_version }}"
+      loop: "{{ sites }}"
+      notify: Recargar nginx
+
+    - name: Desplegar la configuración de cada sitio
+      ansible.builtin.template:
+        src: templates/site.conf.j2
+        dest: "/etc/nginx/sites-available/{{ item.name }}"
+        owner: root
+        group: root
+        mode: "0700"
+      loop: "{{ sites }}"
+      notify: Recargar nginx
+
+    - name: Desactivar sitio por defecto de nginx
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Recargar nginx
+
+  handlers:
+    - name: Recargar nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+        enabled: true

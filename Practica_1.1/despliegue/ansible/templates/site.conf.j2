@@ -1,0 +1,12 @@
+server {
+    listen 80
+    listen [::]:80;
+    server_name {{ item.name }};
+
+    root {{ item.deploy_dir ~ '2' }};
+    index index.html;
+
+    location / {
+        try_files $uri $uri/index.html $uri/ =404;
+    }
+}
