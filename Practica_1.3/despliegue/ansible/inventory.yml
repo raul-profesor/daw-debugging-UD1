@@ -1,0 +1,21 @@
+"all":
+  "children":
+    "backends":
+      "hosts":
+        "18.208.129.52":
+          "ansible_ssh_private_key_file": "/home/raul/Documentos/Clases/Severo Ochoa
+            26-27/DEAW/UD1/Debug/Práctica_1.3/despliegue/terraform/rundash-lb_key.pem"
+          "ansible_user": "ubuntu"
+        "3.88.228.237":
+          "ansible_ssh_private_key_file": "/home/raul/Documentos/Clases/Severo Ochoa
+            26-27/DEAW/UD1/Debug/Práctica_1.3/despliegue/terraform/rundash-lb_key.pem"
+          "ansible_user": "ubuntu"
+    "proxy":
+      "hosts":
+        "3.93.187.220":
+          "ansible_ssh_private_key_file": "/home/raul/Documentos/Clases/Severo Ochoa
+            26-27/DEAW/UD1/Debug/Práctica_1.3/despliegue/terraform/rundash-lb_key.pem"
+          "ansible_user": "ubuntu"
+          "backend_ips":
+          - "18.208.129.52"
+          - "3.88.228.237"
