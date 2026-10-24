@@ -1,0 +1,156 @@
+---
+- name: Esperar a que las instancias estén accesibles
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Esperar conexión SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+- name: Desplegar el escenario multitenant en los backends
+  hosts: backends
+  become: true
+  vars:
+    repo_version: main
+    sites:
+      - name: planes.daw
+        repo_url: https://github.com/raul-profesor/rundash.git
+        deploy_dir: /var/www/planes
+      - name: puertos.daw
+        repo_url: https://github.com/raul-profesor/puertos-tour.git
+        deploy_dir: /var/www/puertos
+  tasks:
+    - name: Esperar a que cloud-init termine
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Esperar a que apt quede libre
+      ansible.builtin.shell: |
+        timeout 120 bash -c 'while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+          || fuser /var/lib/dpkg/lock >/dev/null 2>&1 \
+          || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; done'
+      changed_when: false
+
+    - name: Instalar nginx y git
+      ansible.builtin.apt:
+        name:
+          - nginx
+          - git
+        state: present
+        update_cache: true
+        lock_timeout: 120
+
+    - name: Clonar cada aplicación desde GitHub
+      ansible.builtin.git:
+        repo: "{{ item.repo_url }}"
+        dest: "{{ item.deploy_dir }}"
+        version: "{{ repo_version }}"
+      loop: "{{ sites }}"
+      notify: Recargar nginx backend
+
+    - name: Desplegar la configuración de cada sitio
+      ansible.builtin.template:
+        src: templates/site.conf.j2
+        dest: "/etc/nginx/sites-available/{{ item.name }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ sites }}"
+      notify: Recargar nginx backend
+
+    - name: Activar los sitios
+      ansible.builtin.file:
+        src: "/etc/nginx/sites-available/{{ item.name }}"
+        dest: "/etc/nginx/sites-enabled/{{ item.name }}"
+        state: link
+      loop: "{{ sites }}"
+      notify: Recargar nginx backend
+
+    - name: Desactivar sitio por defecto de nginx
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Recargar nginx backend
+
+  handlers:
+    - name: Recargar nginx backend
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+        enabled: true
+      ignore_errors: true
+
+- name: Configurar el balanceador de carga con SSL
+  hosts: proxy
+  become: true
+  vars:
+    ssl_dir: /etc/nginx/ssl
+    ssl_cert: /etc/nginx/ssl/rundash.crt
+    ssl_key: /etc/nginx/ssl/rundash.key
+  tasks:
+    - name: Esperar a que cloud-init termine
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Esperar a que apt quede libre
+      ansible.builtin.shell: |
+        timeout 120 bash -c 'while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+          || fuser /var/lib/dpkg/lock >/dev/null 2>&1 \
+          || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; done'
+      changed_when: false
+
+    - name: Instalar nginx
+      ansible.builtin.apt:
+        name:
+          - nginx
+        state: present
+        update_cache: true
+        lock_timeout: 120
+
+    - name: Crear directorio para el certificado
+      ansible.builtin.file:
+        path: "{{ ssl_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Generar certificado autofirmado
+      ansible.builtin.command: >-
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048
+        -keyout {{ ssl_key }}
+        -out {{ ssl_cert }}
+        -subj /C=ES/ST=Madrid/L=Madrid/O=DEAW-UD1/CN={{ inventory_hostname }}
+        -addext subjectAltName=IP:{{ inventory_hostname }}
+      args:
+        creates: "{{ ssl_cert }}"
+
+    - name: Desplegar configuración del balanceador con SSL
+      ansible.builtin.template:
+        src: templates/proxy-ssl.conf.j2
+        dest: /etc/nginx/sites-available/rundash-lb-ssl
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Recargar nginx lb
+
+    - name: Activar sitio rundash-lb-ssl
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/rundash-lb-ssl
+        dest: /etc/nginx/sites-enabled/rundash-lb-ssl
+        state: link
+      notify: Recargar nginx lb
+
+    - name: Desactivar sitio por defecto de nginx
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Recargar nginx lb
+
+  handlers:
+    - name: Recargar nginx lb
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+        enabled: true
+      ignore_errors: true
